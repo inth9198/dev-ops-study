@@ -1,20 +1,177 @@
 # macOS에서 시스템 콜 추적하기 (dtruss 사용법)
 
-## 올바른 명령어:
+## dtruss란?
 
-# 1. 화면에 출력
+- **정의**: macOS에서 프로세스의 시스템 콜을 추적하는 도구
+- **기반**: DTrace 프레임워크를 사용하는 스크립트
+- **경로**: `/usr/bin/dtruss`
+- **유사 도구**: Linux의 `strace`와 비슷한 기능
+
+## 기본 명령어
+
+### 1. 화면에 출력
 sudo dtruss ./hello
 
-# 2. 파일로 저장
+### 2. 파일로 저장 (표준출력 + 표준에러)
 sudo dtruss ./hello > hello.log 2>&1
 
-# 3. 특정 시스템 콜만 필터링
+# 또는 표준에러만 저장
+sudo dtruss ./hello 2> hello.log
+
+### 3. 특정 시스템 콜만 필터링
 sudo dtruss -t open,read,write ./hello
 
-# 4. 실행 중인 프로세스 추적
+### 4. 실행 중인 프로세스 추적 (PID로)
 sudo dtruss -p <PID>
 
-## 주의사항:
-- dtruss는 관리자 권한(sudo)이 필요합니다
-- System Integrity Protection (SIP)이 켜져 있으면 일부 기능이 제한될 수 있습니다
-- -o 옵션은 출력 파일이 아닙니다 (잘못된 사용법)
+### 5. 프로세스 이름으로 추적
+sudo dtruss -n <프로세스명>
+
+### 6. 자세한 출력 (인자 포함)
+sudo dtruss -a ./hello
+
+### 7. 시간 정보 포함
+sudo dtruss -d ./hello         # 상대 시간
+sudo dtruss -e ./hello         # 경과 시간
+
+## 주요 옵션
+
+| 옵션    | 설명                                          |
+| ------- | --------------------------------------------- |
+| -p PID  | 특정 프로세스 ID 추적                          |
+| -n NAME | 프로세스 이름으로 추적                         |
+| -t LIST | 특정 시스템 콜만 추적 (쉼표로 구분)            |
+| -a      | 모든 인자 출력                                |
+| -d      | 각 시스템 콜의 상대 시간 출력                  |
+| -e      | 각 시스템 콜의 경과 시간 (us) 출력             |
+| -f      | 자식 프로세스도 추적 (fork/exec 추적)          |
+| -c      | 시스템 콜 통계 (횟수 및 시간) 출력             |
+| -s      | 스택 트레이스 출력                             |
+
+## 출력 형식 이해하기
+
+```
+SYSCALL(args) = return_value
+```
+
+예시:
+```
+open("/etc/hosts\0", 0x0, 0x0)           = 3
+read(0x3, "##\n# Host Database\n", 0x1000)   = 279
+close(0x3)                                = 0
+```
+
+- **open**: 시스템 콜 이름
+- **/etc/hosts**: 파일 경로 인자
+- **0x0, 0x0**: 플래그 및 모드
+- **= 3**: 반환값 (파일 디스크립터)
+
+## 사용 예시
+
+### 파일 I/O 추적
+```bash
+sudo dtruss -t open,read,write,close cat /etc/hosts
+```
+
+### 네트워크 시스템 콜 추적
+```bash
+sudo dtruss -t socket,connect,send,recv curl https://example.com
+```
+
+### 통계 정보 보기
+```bash
+sudo dtruss -c ./hello
+```
+
+출력 예시:
+```
+CALL                            COUNT
+__pthread_sigmask                   1
+close                               3
+fstat64                             2
+open                                4
+write                               1
+```
+
+### 실행 중인 프로그램 추적 (백그라운드 프로세스)
+```bash
+# 1. 프로그램을 백그라운드로 실행
+./long_running_program &
+
+# 2. PID 확인
+ps aux | grep long_running_program
+
+# 3. 추적 시작
+sudo dtruss -p 12345
+```
+
+## 주의사항
+
+### 1. 관리자 권한 필요
+- `dtruss`는 반드시 `sudo`로 실행해야 합니다
+- DTrace는 커널 레벨 추적 도구이므로 root 권한 필요
+
+### 2. System Integrity Protection (SIP)
+- macOS 10.11(El Capitan) 이상에서는 SIP가 활성화되어 있음
+- SIP가 켜져 있으면 시스템 프로세스 추적 불가
+- **SIP 상태 확인**:
+  ```bash
+  csrutil status
+  ```
+- **SIP 비활성화** (권장하지 않음):
+  1. 복구 모드로 재부팅 (Command + R)
+  2. 터미널 실행
+  3. `csrutil disable`
+  4. 재부팅
+- **SIP 재활성화**:
+  ```bash
+  csrutil enable
+  ```
+
+### 3. "cannot control executables signed with restricted entitlements" 오류
+- Apple이 서명한 바이너리는 추적 불가
+- 해결책: 실행 중인 프로세스의 PID로 추적 (`-p` 옵션)
+
+### 4. "dtrace cannot instrument translated processes" 오류
+- Rosetta 2로 번역된 프로세스는 추적 불가 (Intel 바이너리를 Apple Silicon에서 실행 시)
+- Go 바이너리 등 특정 방식으로 컴파일된 바이너리는 직접 추적 제한
+- 해결책: 
+  - 네이티브로 컴파일된 바이너리 사용
+  - 또는 실행 중인 프로세스의 PID로 추적
+
+### 5. 출력 리다이렉션
+- **잘못된 사용**: `sudo dtruss -o output.txt ./hello` (❌)
+- **올바른 사용**: `sudo dtruss ./hello 2> output.txt` (✅)
+- `dtruss`는 표준에러(stderr)로 출력하므로 `2>`를 사용해야 함
+
+## Linux strace와의 비교
+
+| 항목            | macOS (dtruss)              | Linux (strace)             |
+| --------------- | --------------------------- | -------------------------- |
+| 기반 기술       | DTrace                      | ptrace 시스템 콜           |
+| 권한            | sudo 필수                   | 일반 사용자 가능           |
+| 보안 제한       | SIP로 인한 제한 많음        | 상대적으로 적음            |
+| 출력 스트림     | stderr                      | stderr                     |
+| 성능 오버헤드   | 낮음 (DTrace 최적화)        | 중간                       |
+| 자식 추적       | -f 옵션                     | -f 옵션                    |
+| 통계 정보       | -c 옵션                     | -c 옵션                    |
+
+## 고급 사용법
+
+### DTrace 스크립트 직접 작성
+`dtruss`는 DTrace 스크립트의 래퍼이므로, 직접 DTrace를 사용할 수도 있습니다:
+
+```bash
+sudo dtrace -n 'syscall::open*:entry { printf("%s %s", execname, copyinstr(arg0)); }'
+```
+
+### 시스템 전체 시스템 콜 모니터링
+```bash
+sudo dtrace -n 'syscall:::entry { @[probefunc] = count(); }'
+```
+
+## 참고 자료
+
+- DTrace 공식 문서: https://dtrace.org/
+- macOS man 페이지: `man dtruss`
+- DTrace 가이드: `man dtrace`
